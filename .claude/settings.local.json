@@ -1,0 +1,10 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(cd /tmp)",
+      "Bash(npm install *)",
+      "Bash(ls node_modules/puppeteer)",
+      "Bash(curl -s https://cdnjs.cloudflare.com/ajax/libs/matter-js/0.20.0/matter.min.js -o matter.min.js)"
+    ]
+  }
+}

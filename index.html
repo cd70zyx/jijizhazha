@@ -1,0 +1,1372 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>愤怒的小鸟</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { background: #1a1a2e; display: flex; justify-content: center; align-items: center; height: 100vh; overflow: hidden; font-family: 'Arial', sans-serif; }
+  canvas { border-radius: 8px; box-shadow: 0 0 40px rgba(0,0,0,0.5); cursor: crosshair; }
+</style>
+</head>
+<body>
+<canvas id="game"></canvas>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/matter-js/0.20.0/matter.min.js"></script>
+<script>
+(function() {
+'use strict';
+
+// ═══════════════════════════════════════════
+// CONFIG
+// ═══════════════════════════════════════════
+const W = 960, H = 600;
+const GROUND_Y = H - 60;
+const GRAVITY = 1.2;
+const SLING = { x: 150, y: GROUND_Y - 70, forkW: 30, forkH: 50, maxStretch: 110, power: 0.22 };
+const BIRD_RADIUS = 15;
+const SETTLE_FRAMES = 90;
+const SPEED_THRESHOLD = 0.4;
+const DAMAGE_FACTOR = 6;
+const MIN_DAMAGE_SPEED = 1.8;
+const PIG_HP = 50;
+
+const MAT = {
+  wood: { density: 0.004, friction: 0.6, restitution: 0.2, hp: 60, color: '#a0724a', darkColor: '#7a5535', label: '木' },
+  stone: { density: 0.008, friction: 0.8, restitution: 0.05, hp: 150, color: '#8a8a8a', darkColor: '#666', label: '石' },
+};
+
+// ═══════════════════════════════════════════
+// CANVAS & MATTER SETUP
+// ═══════════════════════════════════════════
+const canvas = document.getElementById('game');
+const ctx = canvas.getContext('2d');
+canvas.width = W; canvas.height = H;
+
+const { Engine, World, Bodies, Body, Events, Composite, Vector } = Matter;
+const engine = Engine.create({ gravity: { x: 0, y: GRAVITY } });
+const world = engine.world;
+
+// ═══════════════════════════════════════════
+// GAME STATE
+// ═══════════════════════════════════════════
+const STATE = { MENU: 0, LEVEL_SELECT: 1, PLAYING: 2, AIMING: 3, FLYING: 4, SETTLING: 5, LEVEL_WIN: 6, LEVEL_LOSE: 7 };
+let state = STATE.MENU;
+let currentLevel = 0;
+let score = 0;
+let totalScore = 0;
+let birdsLeft = 0;
+let currentBird = null;
+let isDragging = false;
+let dragPos = { x: 0, y: 0 };
+let settleTimer = 0;
+let pigs = [];
+let blocks = [];
+let particles = [];
+let trajectoryPoints = [];
+let trailPoints = [];
+let flyingBodies = [];
+let animFrame = 0;
+let starRating = 0;
+let menuAnim = 0;
+
+// ═══════════════════════════════════════════
+// LEVEL DATA
+// ═══════════════════════════════════════════
+const LEVELS = [
+  { // Level 1 - 入门
+    name: '初识弹弓',
+    birds: 3,
+    blocks: [
+      { type: 'wood', x: 560, y: GROUND_Y - 20, w: 20, h: 80 },
+      { type: 'wood', x: 640, y: GROUND_Y - 20, w: 20, h: 80 },
+      { type: 'wood', x: 600, y: GROUND_Y - 65, w: 100, h: 15 },
+      { type: 'wood', x: 600, y: GROUND_Y - 85, w: 20, h: 30 },
+    ],
+    pigs: [
+      { x: 600, y: GROUND_Y - 25, r: 18 },
+      { x: 600, y: GROUND_Y - 100, r: 15 },
+    ],
+  },
+  { // Level 2 - 进阶
+    name: '木石之阵',
+    birds: 4,
+    blocks: [
+      { type: 'stone', x: 520, y: GROUND_Y - 20, w: 20, h: 80 },
+      { type: 'stone', x: 600, y: GROUND_Y - 20, w: 20, h: 80 },
+      { type: 'wood', x: 560, y: GROUND_Y - 65, w: 100, h: 15 },
+      { type: 'wood', x: 540, y: GROUND_Y - 85, w: 20, h: 50 },
+      { type: 'wood', x: 580, y: GROUND_Y - 85, w: 20, h: 50 },
+      { type: 'wood', x: 560, y: GROUND_Y - 115, w: 60, h: 15 },
+      { type: 'stone', x: 700, y: GROUND_Y - 25, w: 60, h: 50 },
+      { type: 'wood', x: 700, y: GROUND_Y - 55, w: 40, h: 15 },
+    ],
+    pigs: [
+      { x: 560, y: GROUND_Y - 25, r: 16 },
+      { x: 560, y: GROUND_Y - 130, r: 14 },
+      { x: 700, y: GROUND_Y - 70, r: 15 },
+    ],
+  },
+  { // Level 3 - 挑战
+    name: '双塔奇谋',
+    birds: 5,
+    blocks: [
+      // 左塔 - 木石混合
+      { type: 'stone', x: 480, y: GROUND_Y - 20, w: 20, h: 80 },
+      { type: 'stone', x: 550, y: GROUND_Y - 20, w: 20, h: 80 },
+      { type: 'wood', x: 515, y: GROUND_Y - 65, w: 90, h: 15 },
+      { type: 'wood', x: 500, y: GROUND_Y - 90, w: 20, h: 40 },
+      { type: 'wood', x: 530, y: GROUND_Y - 90, w: 20, h: 40 },
+      { type: 'wood', x: 515, y: GROUND_Y - 115, w: 50, h: 15 },
+      { type: 'stone', x: 515, y: GROUND_Y - 135, w: 20, h: 30 },
+      // 右塔 - 纯石质
+      { type: 'stone', x: 680, y: GROUND_Y - 20, w: 20, h: 80 },
+      { type: 'stone', x: 750, y: GROUND_Y - 20, w: 20, h: 80 },
+      { type: 'stone', x: 715, y: GROUND_Y - 65, w: 90, h: 15 },
+      { type: 'stone', x: 695, y: GROUND_Y - 90, w: 20, h: 40 },
+      { type: 'stone', x: 735, y: GROUND_Y - 90, w: 20, h: 40 },
+      { type: 'stone', x: 715, y: GROUND_Y - 115, w: 50, h: 15 },
+      { type: 'wood', x: 715, y: GROUND_Y - 135, w: 40, h: 25 },
+    ],
+    pigs: [
+      { x: 515, y: GROUND_Y - 25, r: 15 },
+      { x: 515, y: GROUND_Y - 150, r: 13 },
+      { x: 715, y: GROUND_Y - 25, r: 15 },
+      { x: 715, y: GROUND_Y - 150, r: 14 },
+    ],
+  },
+];
+
+// ═══════════════════════════════════════════
+// GROUND & WALLS
+// ═══════════════════════════════════════════
+function createBoundaries() {
+  const ground = Bodies.rectangle(W / 2, GROUND_Y + 30, W + 200, 60, { isStatic: true, friction: 0.8, label: 'ground' });
+  const wallL = Bodies.rectangle(-30, H / 2, 60, H + 200, { isStatic: true, label: 'wall' });
+  const wallR = Bodies.rectangle(W + 30, H / 2, 60, H + 200, { isStatic: true, label: 'wall' });
+  World.add(world, [ground, wallL, wallR]);
+}
+
+// ═══════════════════════════════════════════
+// PARTICLE SYSTEM
+// ═══════════════════════════════════════════
+function spawnParticles(x, y, color, count) {
+  for (let i = 0; i < count; i++) {
+    const angle = Math.random() * Math.PI * 2;
+    const speed = 1 + Math.random() * 4;
+    particles.push({
+      x, y,
+      vx: Math.cos(angle) * speed,
+      vy: Math.sin(angle) * speed - 2,
+      life: 30 + Math.random() * 20,
+      maxLife: 50,
+      size: 2 + Math.random() * 4,
+      color,
+    });
+  }
+}
+
+function updateParticles() {
+  for (let i = particles.length - 1; i >= 0; i--) {
+    const p = particles[i];
+    p.x += p.vx;
+    p.y += p.vy;
+    p.vy += 0.15;
+    p.life--;
+    if (p.life <= 0) particles.splice(i, 1);
+  }
+}
+
+function drawParticles() {
+  particles.forEach(p => {
+    const alpha = p.life / p.maxLife;
+    ctx.globalAlpha = alpha;
+    ctx.fillStyle = p.color;
+    ctx.fillRect(p.x - p.size / 2, p.y - p.size / 2, p.size, p.size);
+  });
+  ctx.globalAlpha = 1;
+}
+
+// ═══════════════════════════════════════════
+// BLOCK FACTORY
+// ═══════════════════════════════════════════
+function createBlock(def) {
+  const mat = MAT[def.type];
+  const body = Bodies.rectangle(def.x, def.y, def.w, def.h, {
+    density: mat.density,
+    friction: mat.friction,
+    restitution: mat.restitution,
+    label: 'block',
+    chamfer: { radius: 1 },
+  });
+  body.gameData = { type: def.type, hp: mat.hp, maxHp: mat.hp, w: def.w, h: def.h, dead: false };
+  blocks.push(body);
+  World.add(world, body);
+  return body;
+}
+
+// ═══════════════════════════════════════════
+// PIG FACTORY
+// ═══════════════════════════════════════════
+function createPig(def) {
+  const body = Bodies.circle(def.x, def.y, def.r, {
+    density: 0.003,
+    friction: 0.4,
+    restitution: 0.3,
+    label: 'pig',
+  });
+  body.gameData = { hp: PIG_HP, maxHp: PIG_HP, r: def.r, dead: false, hurtTimer: 0 };
+  pigs.push(body);
+  World.add(world, body);
+  return body;
+}
+
+// ═══════════════════════════════════════════
+// BIRD FACTORY
+// ═══════════════════════════════════════════
+function createBird(x, y, isStatic) {
+  // Create as dynamic first so Matter.js captures _original via setStatic,
+  // otherwise mass stays Infinity when later calling setStatic(false) and
+  // the bird's position becomes NaN on launch.
+  const body = Bodies.circle(x, y, BIRD_RADIUS, {
+    density: 0.006,
+    friction: 0.5,
+    restitution: 0.4,
+    label: 'bird',
+  });
+  if (isStatic) Body.setStatic(body, true);
+  body.gameData = { launched: false, settleCount: 0, trailTimer: 0 };
+  World.add(world, body);
+  return body;
+}
+
+// ═══════════════════════════════════════════
+// COLLISION HANDLER
+// ═══════════════════════════════════════════
+Events.on(engine, 'collisionStart', function(event) {
+  event.pairs.forEach(pair => {
+    const { bodyA, bodyB } = pair;
+    const relVel = Vector.sub(bodyA.velocity, bodyB.velocity);
+    const speed = Vector.magnitude(relVel);
+
+    if (speed < MIN_DAMAGE_SPEED) return;
+
+    const damage = speed * DAMAGE_FACTOR;
+
+    [bodyA, bodyB].forEach(body => {
+      const other = body === bodyA ? bodyB : bodyA;
+      if (body.gameData && body.label === 'pig' && !body.gameData.dead) {
+        const birdHit = other.label === 'bird' || other.label === 'block';
+        if (birdHit || other.label === 'pig') {
+          body.gameData.hp -= damage * (other.label === 'bird' ? 2.0 : 1.0);
+          body.gameData.hurtTimer = 15;
+          if (body.gameData.hp <= 0) {
+            body.gameData.dead = true;
+            score += 500;
+            spawnParticles(body.position.x, body.position.y, '#5cb85c', 12);
+            spawnParticles(body.position.x, body.position.y, '#fff', 6);
+            World.remove(world, body);
+          }
+        }
+      }
+      if (body.gameData && body.label === 'block' && !body.gameData.dead) {
+        const birdHit = other.label === 'bird';
+        const factor = birdHit ? 1.8 : 0.6;
+        body.gameData.hp -= damage * factor;
+        if (body.gameData.hp <= 0) {
+          body.gameData.dead = true;
+          score += 100;
+          const mat = MAT[body.gameData.type];
+          spawnParticles(body.position.x, body.position.y, mat.color, 8);
+          World.remove(world, body);
+        }
+      }
+    });
+  });
+});
+
+// ═══════════════════════════════════════════
+// LEVEL MANAGEMENT
+// ═══════════════════════════════════════════
+function clearLevel() {
+  // Remove all non-boundary bodies
+  const toRemove = Composite.allBodies(world).filter(b => b.label !== 'ground' && b.label !== 'wall');
+  toRemove.forEach(b => World.remove(world, b));
+  pigs = [];
+  blocks = [];
+  particles = [];
+  trailPoints = [];
+  flyingBodies = [];
+  currentBird = null;
+  isDragging = false;
+  settleTimer = 0;
+}
+
+function loadLevel(index) {
+  clearLevel();
+  currentLevel = index;
+  const level = LEVELS[index];
+  score = 0;
+  birdsLeft = level.birds;
+
+  level.blocks.forEach(b => createBlock(b));
+  level.pigs.forEach(p => createPig(p));
+
+  spawnNextBird();
+  state = STATE.AIMING;
+}
+
+function spawnNextBird() {
+  if (birdsLeft > 0) {
+    birdsLeft--;
+    currentBird = createBird(SLING.x, SLING.y - SLING.forkH, true);
+    flyingBodies.push(currentBird);
+  } else {
+    currentBird = null;
+  }
+}
+
+function checkLevelEnd() {
+  const alivePigs = pigs.filter(p => !p.gameData.dead);
+  if (alivePigs.length === 0) {
+    // Win!
+    score += birdsLeft * 1000;
+    starRating = birdsLeft >= Math.ceil(LEVELS[currentLevel].birds * 0.66) ? 3
+               : birdsLeft >= Math.ceil(LEVELS[currentLevel].birds * 0.33) ? 2 : 1;
+    totalScore = Math.max(totalScore, score);
+    state = STATE.LEVEL_WIN;
+    return true;
+  }
+  if (!currentBird && birdsLeft <= 0) {
+    // Check if all flying birds have settled
+    const allSettled = flyingBodies.every(b => {
+      const speed = Vector.magnitude(b.velocity);
+      return speed < SPEED_THRESHOLD || b.position.x > W + 50 || b.position.y > H + 50;
+    });
+    if (allSettled) {
+      state = STATE.LEVEL_LOSE;
+      return true;
+    }
+  }
+  return false;
+}
+
+// ═══════════════════════════════════════════
+// TRAJECTORY PREDICTION
+// ═══════════════════════════════════════════
+function predictTrajectory(startX, startY, vx, vy) {
+  const points = [];
+  let x = startX, y = startY;
+  let cvx = vx, cvy = vy;
+  // Mirror Matter.js Body.update integration:
+  //   frictionAir = 1 - body.frictionAir * (dt / _baseDelta)
+  //   velocity_new = velocity_old * frictionAir + gravity * scale * dt²
+  //   position += velocity_new
+  // With Engine.update(engine, 1000/60) and bird.frictionAir = 0.01,
+  // frictionAir = 1 - 0.01 * 1 = 0.99
+  const dt = 1000 / 60;
+  const frictionAir = 1 - 0.01;
+  const g = GRAVITY * 0.001 * dt * dt;
+  for (let i = 0; i < 80; i++) {
+    cvx *= frictionAir;
+    cvy = cvy * frictionAir + g;
+    x += cvx;
+    y += cvy;
+    if (i % 3 === 0) points.push({ x, y });
+    if (y > GROUND_Y) break;
+  }
+  return points;
+}
+
+// ═══════════════════════════════════════════
+// INPUT
+// ═══════════════════════════════════════════
+function getPos(e) {
+  const rect = canvas.getBoundingClientRect();
+  const scaleX = W / rect.width;
+  const scaleY = H / rect.height;
+  const clientX = e.touches ? e.touches[0].clientX : e.clientX;
+  const clientY = e.touches ? e.touches[0].clientY : e.clientY;
+  return { x: (clientX - rect.left) * scaleX, y: (clientY - rect.top) * scaleY };
+}
+
+function onDown(e) {
+  e.preventDefault();
+  const pos = getPos(e);
+
+  if (state === STATE.MENU) {
+    // Check start button
+    if (pos.x > W/2 - 100 && pos.x < W/2 + 100 && pos.y > 380 && pos.y < 430) {
+      state = STATE.LEVEL_SELECT;
+    }
+    return;
+  }
+  if (state === STATE.LEVEL_SELECT) {
+    // Check level buttons
+    for (let i = 0; i < LEVELS.length; i++) {
+      const bx = W / 2 - 120 + i * 100;
+      if (pos.x > bx && pos.x < bx + 70 && pos.y > 300 && pos.y < 370) {
+        loadLevel(i);
+        return;
+      }
+    }
+    // Back button
+    if (pos.x > 20 && pos.x < 100 && pos.y > 20 && pos.y < 50) {
+      state = STATE.MENU;
+    }
+    return;
+  }
+  if (state === STATE.LEVEL_WIN || state === STATE.LEVEL_LOSE) {
+    // Retry / Next / Menu buttons
+    if (pos.x > W/2 - 130 && pos.x < W/2 - 10 && pos.y > 370 && pos.y < 410) {
+      loadLevel(currentLevel); // retry
+    }
+    if (state === STATE.LEVEL_WIN && currentLevel < LEVELS.length - 1) {
+      if (pos.x > W/2 + 10 && pos.x < W/2 + 130 && pos.y > 370 && pos.y < 410) {
+        loadLevel(currentLevel + 1); // next
+      }
+    }
+    if (pos.x > W/2 - 60 && pos.x < W/2 + 60 && pos.y > 420 && pos.y < 460) {
+      state = STATE.LEVEL_SELECT; // menu
+    }
+    return;
+  }
+  if (state === STATE.AIMING && currentBird) {
+    const dx = pos.x - currentBird.position.x;
+    const dy = pos.y - currentBird.position.y;
+    if (Math.sqrt(dx * dx + dy * dy) < 50) {
+      isDragging = true;
+    }
+  }
+}
+
+function onMove(e) {
+  e.preventDefault();
+  if (!isDragging || state !== STATE.AIMING || !currentBird) return;
+  const pos = getPos(e);
+  let dx = pos.x - SLING.x;
+  let dy = pos.y - (SLING.y - SLING.forkH);
+  const dist = Math.sqrt(dx * dx + dy * dy);
+  if (dist > SLING.maxStretch) {
+    dx = (dx / dist) * SLING.maxStretch;
+    dy = (dy / dist) * SLING.maxStretch;
+  }
+  dragPos = { x: SLING.x + dx, y: SLING.y - SLING.forkH + dy };
+  Body.setPosition(currentBird, dragPos);
+
+  // Trajectory prediction
+  const vx = (SLING.x - dragPos.x) * SLING.power;
+  const vy = ((SLING.y - SLING.forkH) - dragPos.y) * SLING.power;
+  trajectoryPoints = predictTrajectory(SLING.x, SLING.y - SLING.forkH, vx, vy);
+}
+
+function onUp(e) {
+  e.preventDefault();
+  if (!isDragging || state !== STATE.AIMING || !currentBird) return;
+  isDragging = false;
+
+  const dx = SLING.x - currentBird.position.x;
+  const dy = (SLING.y - SLING.forkH) - currentBird.position.y;
+  const stretch = Math.sqrt(dx * dx + dy * dy);
+
+  if (stretch < 10) {
+    // Too small, reset
+    Body.setPosition(currentBird, { x: SLING.x, y: SLING.y - SLING.forkH });
+    trajectoryPoints = [];
+    return;
+  }
+
+  // Launch!
+  Body.setStatic(currentBird, false);
+  const vx = dx * SLING.power;
+  const vy = dy * SLING.power;
+  Body.setVelocity(currentBird, { x: vx, y: vy });
+  currentBird.gameData.launched = true;
+  trajectoryPoints = [];
+  trailPoints = [];
+  state = STATE.FLYING;
+}
+
+canvas.addEventListener('mousedown', onDown);
+canvas.addEventListener('mousemove', onMove);
+canvas.addEventListener('mouseup', onUp);
+canvas.addEventListener('touchstart', onDown, { passive: false });
+canvas.addEventListener('touchmove', onMove, { passive: false });
+canvas.addEventListener('touchend', onUp, { passive: false });
+
+// ═══════════════════════════════════════════
+// DRAWING HELPERS
+// ═══════════════════════════════════════════
+function drawBackground() {
+  // Sky gradient
+  const skyGrad = ctx.createLinearGradient(0, 0, 0, GROUND_Y);
+  skyGrad.addColorStop(0, '#87CEEB');
+  skyGrad.addColorStop(0.5, '#B0E0FF');
+  skyGrad.addColorStop(1, '#E0F0FF');
+  ctx.fillStyle = skyGrad;
+  ctx.fillRect(0, 0, W, GROUND_Y);
+
+  // Clouds
+  drawCloud(120, 80, 0.8);
+  drawCloud(400, 50, 1.0);
+  drawCloud(700, 100, 0.6);
+  drawCloud(850, 40, 0.9);
+
+  // Mountains
+  ctx.fillStyle = '#6B8E6B';
+  drawMountain(100, GROUND_Y, 200, 120);
+  drawMountain(300, GROUND_Y, 250, 90);
+  drawMountain(600, GROUND_Y, 300, 140);
+  drawMountain(850, GROUND_Y, 180, 80);
+
+  ctx.fillStyle = '#7FA37F';
+  drawMountain(200, GROUND_Y, 180, 70);
+  drawMountain(500, GROUND_Y, 220, 100);
+  drawMountain(750, GROUND_Y, 200, 85);
+
+  // Ground
+  const groundGrad = ctx.createLinearGradient(0, GROUND_Y, 0, H);
+  groundGrad.addColorStop(0, '#5DBE5D');
+  groundGrad.addColorStop(0.3, '#4CAF50');
+  groundGrad.addColorStop(1, '#3D8B3D');
+  ctx.fillStyle = groundGrad;
+  ctx.fillRect(0, GROUND_Y, W, H - GROUND_Y);
+
+  // Ground line
+  ctx.strokeStyle = '#4a9e4a';
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  ctx.moveTo(0, GROUND_Y);
+  ctx.lineTo(W, GROUND_Y);
+  ctx.stroke();
+
+  // Grass tufts
+  ctx.strokeStyle = '#3D8B3D';
+  ctx.lineWidth = 1.5;
+  for (let i = 0; i < W; i += 15) {
+    const h = 4 + Math.sin(i * 0.3) * 3;
+    ctx.beginPath();
+    ctx.moveTo(i, GROUND_Y);
+    ctx.lineTo(i - 2, GROUND_Y - h);
+    ctx.moveTo(i, GROUND_Y);
+    ctx.lineTo(i + 3, GROUND_Y - h + 1);
+    ctx.stroke();
+  }
+}
+
+function drawCloud(x, y, scale) {
+  ctx.save();
+  ctx.translate(x + Math.sin(animFrame * 0.005 + x) * 5, y);
+  ctx.scale(scale, scale);
+  ctx.fillStyle = 'rgba(255,255,255,0.8)';
+  ctx.beginPath();
+  ctx.arc(0, 0, 25, 0, Math.PI * 2);
+  ctx.arc(25, -5, 20, 0, Math.PI * 2);
+  ctx.arc(-25, 0, 18, 0, Math.PI * 2);
+  ctx.arc(12, -15, 18, 0, Math.PI * 2);
+  ctx.arc(-10, -12, 20, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.restore();
+}
+
+function drawMountain(x, baseY, width, height) {
+  ctx.beginPath();
+  ctx.moveTo(x - width / 2, baseY);
+  ctx.lineTo(x, baseY - height);
+  ctx.lineTo(x + width / 2, baseY);
+  ctx.closePath();
+  ctx.fill();
+}
+
+function drawSlingshot() {
+  const sx = SLING.x, sy = SLING.y;
+  const forkTop = sy - SLING.forkH;
+
+  // Back band (behind bird)
+  if (isDragging && currentBird) {
+    ctx.strokeStyle = '#3d2b1f';
+    ctx.lineWidth = 4;
+    ctx.beginPath();
+    ctx.moveTo(sx + SLING.forkW / 2, forkTop + 5);
+    ctx.lineTo(currentBird.position.x, currentBird.position.y);
+    ctx.stroke();
+  }
+
+  // Y-frame shadow
+  ctx.fillStyle = 'rgba(0,0,0,0.15)';
+  ctx.fillRect(sx - 6 + 3, forkTop + 3, 12, SLING.forkH + 3);
+
+  // Y-frame
+  ctx.fillStyle = '#6B4226';
+  ctx.strokeStyle = '#4a2f1a';
+  ctx.lineWidth = 2;
+  // Main trunk
+  ctx.beginPath();
+  ctx.roundRect(sx - 6, forkTop + 15, 12, SLING.forkH - 10, 3);
+  ctx.fill(); ctx.stroke();
+  // Left fork
+  ctx.beginPath();
+  ctx.moveTo(sx - 4, forkTop + 18);
+  ctx.lineTo(sx - SLING.forkW / 2 - 2, forkTop);
+  ctx.lineTo(sx - SLING.forkW / 2 + 6, forkTop);
+  ctx.lineTo(sx + 2, forkTop + 18);
+  ctx.closePath();
+  ctx.fill(); ctx.stroke();
+  // Right fork
+  ctx.beginPath();
+  ctx.moveTo(sx - 2, forkTop + 18);
+  ctx.lineTo(sx + SLING.forkW / 2 - 6, forkTop);
+  ctx.lineTo(sx + SLING.forkW / 2 + 2, forkTop);
+  ctx.lineTo(sx + 4, forkTop + 18);
+  ctx.closePath();
+  ctx.fill(); ctx.stroke();
+
+  // Fork tips
+  ctx.fillStyle = '#8B5E3C';
+  ctx.beginPath();
+  ctx.arc(sx - SLING.forkW / 2 + 2, forkTop + 3, 5, 0, Math.PI * 2);
+  ctx.fill(); ctx.stroke();
+  ctx.beginPath();
+  ctx.arc(sx + SLING.forkW / 2 - 2, forkTop + 3, 5, 0, Math.PI * 2);
+  ctx.fill(); ctx.stroke();
+
+  // Front band
+  if (isDragging && currentBird) {
+    ctx.strokeStyle = '#5c3a1e';
+    ctx.lineWidth = 4;
+    ctx.beginPath();
+    ctx.moveTo(sx - SLING.forkW / 2, forkTop + 5);
+    ctx.lineTo(currentBird.position.x, currentBird.position.y);
+    ctx.stroke();
+  } else if (currentBird && state === STATE.AIMING) {
+    // Resting bands
+    ctx.strokeStyle = '#5c3a1e';
+    ctx.lineWidth = 3;
+    ctx.beginPath();
+    ctx.moveTo(sx - SLING.forkW / 2, forkTop + 5);
+    ctx.lineTo(sx, forkTop + 10);
+    ctx.moveTo(sx + SLING.forkW / 2, forkTop + 5);
+    ctx.lineTo(sx, forkTop + 10);
+    ctx.stroke();
+  }
+}
+
+function drawBird(body) {
+  if (!body || body.gameData.dead) return;
+  const { x, y } = body.position;
+  const angle = body.angle;
+  const r = BIRD_RADIUS;
+
+  ctx.save();
+  ctx.translate(x, y);
+  ctx.rotate(angle);
+
+  // Body shadow
+  ctx.fillStyle = 'rgba(0,0,0,0.15)';
+  ctx.beginPath();
+  ctx.arc(2, 2, r, 0, Math.PI * 2);
+  ctx.fill();
+
+  // Body
+  const bodyGrad = ctx.createRadialGradient(-3, -3, 2, 0, 0, r);
+  bodyGrad.addColorStop(0, '#FF4444');
+  bodyGrad.addColorStop(0.7, '#CC2222');
+  bodyGrad.addColorStop(1, '#991111');
+  ctx.fillStyle = bodyGrad;
+  ctx.beginPath();
+  ctx.arc(0, 0, r, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.strokeStyle = '#771111';
+  ctx.lineWidth = 1.5;
+  ctx.stroke();
+
+  // Belly
+  ctx.fillStyle = '#FFE4C4';
+  ctx.beginPath();
+  ctx.ellipse(0, 4, r * 0.5, r * 0.4, 0, 0, Math.PI * 2);
+  ctx.fill();
+
+  // Eyes
+  ctx.fillStyle = 'white';
+  ctx.beginPath();
+  ctx.ellipse(-5, -3, 5, 6, 0, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.beginPath();
+  ctx.ellipse(5, -3, 5, 6, 0, 0, Math.PI * 2);
+  ctx.fill();
+
+  // Pupils
+  ctx.fillStyle = '#111';
+  ctx.beginPath();
+  ctx.arc(-3, -3, 2.5, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.beginPath();
+  ctx.arc(7, -3, 2.5, 0, Math.PI * 2);
+  ctx.fill();
+
+  // Angry eyebrows
+  ctx.strokeStyle = '#333';
+  ctx.lineWidth = 2.5;
+  ctx.beginPath();
+  ctx.moveTo(-9, -9);
+  ctx.lineTo(-2, -7);
+  ctx.stroke();
+  ctx.beginPath();
+  ctx.moveTo(9, -9);
+  ctx.lineTo(2, -7);
+  ctx.stroke();
+
+  // Beak
+  ctx.fillStyle = '#FFB800';
+  ctx.beginPath();
+  ctx.moveTo(-3, 1);
+  ctx.lineTo(3, 1);
+  ctx.lineTo(0, 7);
+  ctx.closePath();
+  ctx.fill();
+  ctx.strokeStyle = '#CC9500';
+  ctx.lineWidth = 1;
+  ctx.stroke();
+
+  // Tail feathers
+  ctx.fillStyle = '#222';
+  ctx.beginPath();
+  ctx.moveTo(-r + 2, -3);
+  ctx.lineTo(-r - 8, -8);
+  ctx.lineTo(-r - 6, -2);
+  ctx.lineTo(-r - 9, 2);
+  ctx.lineTo(-r + 2, 2);
+  ctx.closePath();
+  ctx.fill();
+
+  ctx.restore();
+}
+
+function drawBlock(body) {
+  if (!body.gameData || body.gameData.dead) return;
+  const { x, y } = body.position;
+  const angle = body.angle;
+  const gd = body.gameData;
+  const mat = MAT[gd.type];
+  const hw = gd.w / 2, hh = gd.h / 2;
+
+  // Damage visual
+  const damageRatio = gd.hp / gd.maxHp;
+  const alpha = 0.4 + damageRatio * 0.6;
+
+  ctx.save();
+  ctx.translate(x, y);
+  ctx.rotate(angle);
+  ctx.globalAlpha = alpha;
+
+  // Shadow
+  ctx.fillStyle = 'rgba(0,0,0,0.12)';
+  ctx.fillRect(-hw + 2, -hh + 2, gd.w, gd.h);
+
+  // Block body
+  ctx.fillStyle = mat.color;
+  ctx.fillRect(-hw, -hh, gd.w, gd.h);
+
+  // Texture
+  if (gd.type === 'wood') {
+    ctx.strokeStyle = mat.darkColor;
+    ctx.lineWidth = 0.8;
+    for (let i = -hh + 5; i < hh; i += 8) {
+      ctx.beginPath();
+      ctx.moveTo(-hw + 2, i);
+      ctx.bezierCurveTo(-hw + gd.w * 0.3, i - 2, -hw + gd.w * 0.7, i + 2, hw - 2, i);
+      ctx.stroke();
+    }
+  } else {
+    ctx.strokeStyle = mat.darkColor;
+    ctx.lineWidth = 0.6;
+    // Crack pattern
+    if (damageRatio < 0.7) {
+      ctx.beginPath();
+      ctx.moveTo(-hw + 3, -hh + 3);
+      ctx.lineTo(0, 0);
+      ctx.lineTo(hw - 3, hh - 5);
+      ctx.stroke();
+    }
+    if (damageRatio < 0.4) {
+      ctx.beginPath();
+      ctx.moveTo(hw - 3, -hh + 3);
+      ctx.lineTo(0, 0);
+      ctx.lineTo(-hw + 5, hh - 3);
+      ctx.stroke();
+    }
+    // Speckles
+    ctx.fillStyle = 'rgba(255,255,255,0.15)';
+    for (let i = 0; i < 3; i++) {
+      const sx = -hw + 4 + (i * gd.w / 3);
+      const sy = -hh + 4 + (i * 7 % gd.h);
+      ctx.fillRect(sx, sy, 2, 2);
+    }
+  }
+
+  // Border
+  ctx.strokeStyle = mat.darkColor;
+  ctx.lineWidth = 1.5;
+  ctx.strokeRect(-hw, -hh, gd.w, gd.h);
+
+  ctx.globalAlpha = 1;
+  ctx.restore();
+}
+
+function drawPig(body) {
+  if (!body.gameData || body.gameData.dead) return;
+  const { x, y } = body.position;
+  const r = body.gameData.r;
+  const hurt = body.gameData.hurtTimer > 0;
+
+  ctx.save();
+  ctx.translate(x, y);
+
+  // Shadow
+  ctx.fillStyle = 'rgba(0,0,0,0.12)';
+  ctx.beginPath();
+  ctx.arc(2, 2, r, 0, Math.PI * 2);
+  ctx.fill();
+
+  // Body
+  const pigGrad = ctx.createRadialGradient(-3, -3, 2, 0, 0, r);
+  pigGrad.addColorStop(0, hurt ? '#CC8844' : '#7ED67E');
+  pigGrad.addColorStop(0.7, hurt ? '#AA6622' : '#5CB85C');
+  pigGrad.addColorStop(1, hurt ? '#885511' : '#3D8B3D');
+  ctx.fillStyle = pigGrad;
+  ctx.beginPath();
+  ctx.arc(0, 0, r, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.strokeStyle = hurt ? '#664400' : '#2D6B2D';
+  ctx.lineWidth = 1.5;
+  ctx.stroke();
+
+  // Ears
+  ctx.fillStyle = hurt ? '#AA6622' : '#5CB85C';
+  ctx.beginPath();
+  ctx.ellipse(-r * 0.6, -r * 0.7, 5, 7, -0.3, 0, Math.PI * 2);
+  ctx.fill(); ctx.stroke();
+  ctx.beginPath();
+  ctx.ellipse(r * 0.6, -r * 0.7, 5, 7, 0.3, 0, Math.PI * 2);
+  ctx.fill(); ctx.stroke();
+
+  // Eyes
+  ctx.fillStyle = 'white';
+  ctx.beginPath();
+  ctx.ellipse(-4, -3, 4, 5, 0, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.beginPath();
+  ctx.ellipse(4, -3, 4, 5, 0, 0, Math.PI * 2);
+  ctx.fill();
+
+  // Pupils
+  ctx.fillStyle = '#111';
+  if (hurt) {
+    // X eyes when hurt
+    ctx.lineWidth = 1.5;
+    ctx.strokeStyle = '#111';
+    ctx.beginPath(); ctx.moveTo(-6, -5); ctx.lineTo(-2, -1); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(-2, -5); ctx.lineTo(-6, -1); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(2, -5); ctx.lineTo(6, -1); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(6, -5); ctx.lineTo(2, -1); ctx.stroke();
+  } else {
+    ctx.beginPath();
+    ctx.arc(-3, -2, 2, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.beginPath();
+    ctx.arc(5, -2, 2, 0, Math.PI * 2);
+    ctx.fill();
+  }
+
+  // Snout
+  ctx.fillStyle = hurt ? '#CC9955' : '#8FD88F';
+  ctx.beginPath();
+  ctx.ellipse(0, 4, 7, 5, 0, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.strokeStyle = hurt ? '#886633' : '#4a8a4a';
+  ctx.lineWidth = 1;
+  ctx.stroke();
+
+  // Nostrils
+  ctx.fillStyle = hurt ? '#886633' : '#3D7A3D';
+  ctx.beginPath();
+  ctx.ellipse(-2.5, 4, 1.8, 1.5, 0, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.beginPath();
+  ctx.ellipse(2.5, 4, 1.8, 1.5, 0, 0, Math.PI * 2);
+  ctx.fill();
+
+  if (body.gameData.hurtTimer > 0) body.gameData.hurtTimer--;
+
+  ctx.restore();
+}
+
+function drawTrajectory() {
+  if (trajectoryPoints.length === 0) return;
+  ctx.fillStyle = 'rgba(255,255,255,0.6)';
+  trajectoryPoints.forEach((p, i) => {
+    const size = 3 - i * 0.05;
+    if (size > 0) {
+      ctx.beginPath();
+      ctx.arc(p.x, p.y, size, 0, Math.PI * 2);
+      ctx.fill();
+    }
+  });
+}
+
+function drawTrail() {
+  if (trailPoints.length < 2) return;
+  ctx.strokeStyle = 'rgba(255,100,100,0.3)';
+  ctx.lineWidth = 2;
+  ctx.setLineDash([4, 4]);
+  ctx.beginPath();
+  ctx.moveTo(trailPoints[0].x, trailPoints[0].y);
+  for (let i = 1; i < trailPoints.length; i++) {
+    ctx.lineTo(trailPoints[i].x, trailPoints[i].y);
+  }
+  ctx.stroke();
+  ctx.setLineDash([]);
+}
+
+function drawHUD() {
+  // Score
+  ctx.fillStyle = 'rgba(0,0,0,0.4)';
+  ctx.beginPath();
+  ctx.roundRect(10, 10, 160, 36, 8);
+  ctx.fill();
+  ctx.fillStyle = '#FFF';
+  ctx.font = 'bold 18px Arial';
+  ctx.textAlign = 'left';
+  ctx.fillText(`分数: ${score}`, 22, 34);
+
+  // Level name
+  ctx.fillStyle = 'rgba(0,0,0,0.4)';
+  const levelName = LEVELS[currentLevel].name;
+  const nameW = ctx.measureText(levelName).width + 30;
+  ctx.beginPath();
+  ctx.roundRect(W / 2 - nameW / 2, 10, nameW, 36, 8);
+  ctx.fill();
+  ctx.fillStyle = '#FFF';
+  ctx.textAlign = 'center';
+  ctx.fillText(levelName, W / 2, 34);
+
+  // Birds left
+  ctx.fillStyle = 'rgba(0,0,0,0.4)';
+  ctx.beginPath();
+  ctx.roundRect(W - 170, 10, 160, 36, 8);
+  ctx.fill();
+  ctx.fillStyle = '#FFF';
+  ctx.textAlign = 'right';
+  ctx.fillText(`小鸟: ${birdsLeft}`, W - 22, 34);
+
+  // Remaining birds icons
+  for (let i = 0; i < birdsLeft; i++) {
+    const bx = W - 165 + i * 22;
+    const by = 55;
+    ctx.fillStyle = '#CC2222';
+    ctx.beginPath();
+    ctx.arc(bx + 8, by, 8, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.fillStyle = '#FFB800';
+    ctx.beginPath();
+    ctx.moveTo(bx + 6, by + 1);
+    ctx.lineTo(bx + 10, by + 1);
+    ctx.lineTo(bx + 8, by + 5);
+    ctx.closePath();
+    ctx.fill();
+  }
+
+  // Pigs remaining
+  const alivePigs = pigs.filter(p => !p.gameData.dead).length;
+  if (alivePigs > 0) {
+    ctx.fillStyle = 'rgba(0,0,0,0.3)';
+    ctx.beginPath();
+    ctx.roundRect(10, 52, 120, 28, 6);
+    ctx.fill();
+    ctx.fillStyle = '#FFF';
+    ctx.font = '14px Arial';
+    ctx.textAlign = 'left';
+    ctx.fillText(`猪: ${alivePigs} 只`, 22, 71);
+  }
+}
+
+// ═══════════════════════════════════════════
+// MENU & UI SCREENS
+// ═══════════════════════════════════════════
+function drawMenu() {
+  drawBackground();
+
+  // Title
+  ctx.save();
+  const bounce = Math.sin(menuAnim * 0.03) * 8;
+  ctx.translate(W / 2, 160 + bounce);
+  ctx.rotate(Math.sin(menuAnim * 0.02) * 0.03);
+
+  // Title shadow
+  ctx.fillStyle = 'rgba(0,0,0,0.3)';
+  ctx.font = 'bold 60px Arial';
+  ctx.textAlign = 'center';
+  ctx.fillText('愤怒的小鸟', 3, 3);
+
+  // Title text
+  ctx.fillStyle = '#FF3333';
+  ctx.strokeStyle = '#990000';
+  ctx.lineWidth = 3;
+  ctx.fillText('愤怒的小鸟', 0, 0);
+  ctx.strokeText('愤怒的小鸟', 0, 0);
+
+  // Subtitle
+  ctx.font = '20px Arial';
+  ctx.fillStyle = '#FFF';
+  ctx.fillText('Angry Birds', 0, 35);
+  ctx.restore();
+
+  // Decorative bird
+  ctx.save();
+  ctx.translate(W / 2, 270);
+  ctx.scale(2.5, 2.5);
+  // Draw a big bird at origin
+  const r = BIRD_RADIUS;
+  const bodyGrad = ctx.createRadialGradient(-3, -3, 2, 0, 0, r);
+  bodyGrad.addColorStop(0, '#FF4444');
+  bodyGrad.addColorStop(0.7, '#CC2222');
+  bodyGrad.addColorStop(1, '#991111');
+  ctx.fillStyle = bodyGrad;
+  ctx.beginPath(); ctx.arc(0, 0, r, 0, Math.PI * 2); ctx.fill();
+  ctx.strokeStyle = '#771111'; ctx.lineWidth = 1.5; ctx.stroke();
+  ctx.fillStyle = '#FFE4C4';
+  ctx.beginPath(); ctx.ellipse(0, 4, r * 0.5, r * 0.4, 0, 0, Math.PI * 2); ctx.fill();
+  ctx.fillStyle = 'white';
+  ctx.beginPath(); ctx.ellipse(-5, -3, 5, 6, 0, 0, Math.PI * 2); ctx.fill();
+  ctx.beginPath(); ctx.ellipse(5, -3, 5, 6, 0, 0, Math.PI * 2); ctx.fill();
+  ctx.fillStyle = '#111';
+  ctx.beginPath(); ctx.arc(-3, -3, 2.5, 0, Math.PI * 2); ctx.fill();
+  ctx.beginPath(); ctx.arc(7, -3, 2.5, 0, Math.PI * 2); ctx.fill();
+  ctx.strokeStyle = '#333'; ctx.lineWidth = 2.5;
+  ctx.beginPath(); ctx.moveTo(-9, -9); ctx.lineTo(-2, -7); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(9, -9); ctx.lineTo(2, -7); ctx.stroke();
+  ctx.fillStyle = '#FFB800';
+  ctx.beginPath(); ctx.moveTo(-3, 1); ctx.lineTo(3, 1); ctx.lineTo(0, 7); ctx.closePath(); ctx.fill();
+  ctx.restore();
+
+  // Start button
+  drawButton(W / 2, 405, 200, 50, '开始游戏', '#4CAF50', '#388E3C');
+
+  // Version
+  ctx.fillStyle = 'rgba(255,255,255,0.4)';
+  ctx.font = '12px Arial';
+  ctx.textAlign = 'center';
+  ctx.fillText('v1.0 · HTML5 + Matter.js', W / 2, H - 20);
+}
+
+function drawLevelSelect() {
+  drawBackground();
+
+  ctx.fillStyle = 'rgba(0,0,0,0.5)';
+  ctx.fillRect(0, 0, W, H);
+
+  // Title
+  ctx.fillStyle = '#FFF';
+  ctx.font = 'bold 36px Arial';
+  ctx.textAlign = 'center';
+  ctx.fillText('选择关卡', W / 2, 120);
+
+  // Decorative line
+  ctx.strokeStyle = 'rgba(255,255,255,0.3)';
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  ctx.moveTo(W / 2 - 120, 140);
+  ctx.lineTo(W / 2 + 120, 140);
+  ctx.stroke();
+
+  // Level buttons
+  const colors = ['#4CAF50', '#FF9800', '#F44336'];
+  for (let i = 0; i < LEVELS.length; i++) {
+    const bx = W / 2 - 120 + i * 100;
+    const by = 300;
+
+    // Button shadow
+    ctx.fillStyle = 'rgba(0,0,0,0.3)';
+    ctx.beginPath();
+    ctx.roundRect(bx + 3, by + 3, 70, 70, 10);
+    ctx.fill();
+
+    // Button
+    ctx.fillStyle = colors[i];
+    ctx.beginPath();
+    ctx.roundRect(bx, by, 70, 70, 10);
+    ctx.fill();
+    ctx.strokeStyle = 'rgba(255,255,255,0.3)';
+    ctx.lineWidth = 2;
+    ctx.stroke();
+
+    // Level number
+    ctx.fillStyle = '#FFF';
+    ctx.font = 'bold 28px Arial';
+    ctx.textAlign = 'center';
+    ctx.fillText(`${i + 1}`, bx + 35, by + 38);
+
+    // Level name
+    ctx.font = '11px Arial';
+    ctx.fillText(LEVELS[i].name, bx + 35, by + 58);
+  }
+
+  // Back button
+  drawButton(60, 35, 80, 30, '← 返回', 'rgba(255,255,255,0.2)', 'rgba(255,255,255,0.1)');
+
+  // Total score
+  ctx.fillStyle = 'rgba(255,255,255,0.6)';
+  ctx.font = '16px Arial';
+  ctx.textAlign = 'center';
+  ctx.fillText(`最高分: ${totalScore}`, W / 2, 420);
+}
+
+function drawLevelEnd() {
+  const isWin = state === STATE.LEVEL_WIN;
+
+  // Dim overlay
+  ctx.fillStyle = 'rgba(0,0,0,0.55)';
+  ctx.fillRect(0, 0, W, H);
+
+  // Panel
+  ctx.fillStyle = 'rgba(30,30,60,0.92)';
+  ctx.beginPath();
+  ctx.roundRect(W / 2 - 180, 180, 360, 300, 16);
+  ctx.fill();
+  ctx.strokeStyle = isWin ? '#4CAF50' : '#F44336';
+  ctx.lineWidth = 3;
+  ctx.stroke();
+
+  // Title
+  ctx.fillStyle = isWin ? '#4CAF50' : '#F44336';
+  ctx.font = 'bold 36px Arial';
+  ctx.textAlign = 'center';
+  ctx.fillText(isWin ? '关卡通过！' : '关卡失败', W / 2, 235);
+
+  // Score
+  ctx.fillStyle = '#FFF';
+  ctx.font = '22px Arial';
+  ctx.fillText(`得分: ${score}`, W / 2, 280);
+
+  // Stars (only on win)
+  if (isWin) {
+    for (let i = 0; i < 3; i++) {
+      const sx = W / 2 - 50 + i * 50;
+      const sy = 320;
+      drawStar(sx, sy, 18, i < starRating ? '#FFD700' : '#555');
+    }
+  }
+
+  // Buttons
+  drawButton(W / 2 - 70, 390, 120, 40, '重试', '#FF9800', '#E65100');
+  if (isWin && currentLevel < LEVELS.length - 1) {
+    drawButton(W / 2 + 70, 390, 120, 40, '下一关', '#4CAF50', '#2E7D32');
+  }
+  drawButton(W / 2, 440, 120, 36, '返回菜单', 'rgba(255,255,255,0.15)', 'rgba(255,255,255,0.08)');
+}
+
+function drawStar(cx, cy, size, color) {
+  ctx.fillStyle = color;
+  ctx.beginPath();
+  for (let i = 0; i < 5; i++) {
+    const angle = (i * 4 * Math.PI) / 5 - Math.PI / 2;
+    const x = cx + Math.cos(angle) * size;
+    const y = cy + Math.sin(angle) * size;
+    if (i === 0) ctx.moveTo(x, y);
+    else ctx.lineTo(x, y);
+  }
+  ctx.closePath();
+  ctx.fill();
+  if (color === '#FFD700') {
+    ctx.strokeStyle = '#CC9900';
+    ctx.lineWidth = 1.5;
+    ctx.stroke();
+  }
+}
+
+function drawButton(cx, cy, w, h, text, bg, border) {
+  ctx.fillStyle = bg;
+  ctx.beginPath();
+  ctx.roundRect(cx - w / 2, cy - h / 2, w, h, h / 3);
+  ctx.fill();
+  if (border) {
+    ctx.strokeStyle = border;
+    ctx.lineWidth = 2;
+    ctx.stroke();
+  }
+  ctx.fillStyle = '#FFF';
+  ctx.font = `bold ${h > 40 ? 20 : 15}px Arial`;
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillText(text, cx, cy);
+  ctx.textBaseline = 'alphabetic';
+}
+
+// ═══════════════════════════════════════════
+// WAITING BIRDS (queue behind slingshot)
+// ═══════════════════════════════════════════
+function drawWaitingBirds() {
+  for (let i = 0; i < birdsLeft - (currentBird && state === STATE.AIMING ? 1 : 0); i++) {
+    const bx = 50 - i * 28;
+    const by = GROUND_Y - 12;
+    const r = 10;
+    ctx.fillStyle = '#CC2222';
+    ctx.beginPath();
+    ctx.arc(bx, by, r, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.strokeStyle = '#771111';
+    ctx.lineWidth = 1;
+    ctx.stroke();
+    // Simple face
+    ctx.fillStyle = 'white';
+    ctx.beginPath();
+    ctx.arc(bx - 2, by - 2, 3, 0, Math.PI * 2);
+    ctx.arc(bx + 3, by - 2, 3, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.fillStyle = '#111';
+    ctx.beginPath();
+    ctx.arc(bx - 1, by - 2, 1.5, 0, Math.PI * 2);
+    ctx.arc(bx + 4, by - 2, 1.5, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.fillStyle = '#FFB800';
+    ctx.beginPath();
+    ctx.moveTo(bx - 2, by + 1);
+    ctx.lineTo(bx + 2, by + 1);
+    ctx.lineTo(bx, by + 5);
+    ctx.closePath();
+    ctx.fill();
+  }
+}
+
+// ═══════════════════════════════════════════
+// GAME LOOP
+// ═══════════════════════════════════════════
+function update() {
+  animFrame++;
+
+  if (state >= STATE.PLAYING && state <= STATE.SETTLING) {
+    Engine.update(engine, 1000 / 60);
+    updateParticles();
+
+    // Track trail for flying bird
+    if (state === STATE.FLYING && currentBird && !currentBird.gameData.dead) {
+      currentBird.gameData.trailTimer++;
+      if (currentBird.gameData.trailTimer % 3 === 0) {
+        trailPoints.push({ x: currentBird.position.x, y: currentBird.position.y });
+        if (trailPoints.length > 60) trailPoints.shift();
+      }
+    }
+
+    // Check if bird is out of bounds
+    if (state === STATE.FLYING && currentBird) {
+      const pos = currentBird.position;
+      if (pos.x > W + 50 || pos.x < -50 || pos.y > H + 50) {
+        state = STATE.SETTLING;
+        settleTimer = 0;
+      }
+    }
+
+    // State transitions
+    if (state === STATE.FLYING && currentBird) {
+      const speed = Vector.magnitude(currentBird.velocity);
+      if (speed < SPEED_THRESHOLD) {
+        state = STATE.SETTLING;
+        settleTimer = 0;
+      }
+    }
+
+    if (state === STATE.SETTLING) {
+      settleTimer++;
+      if (settleTimer >= SETTLE_FRAMES) {
+        if (!checkLevelEnd()) {
+          // Spawn next bird
+          spawnNextBird();
+          if (currentBird) {
+            state = STATE.AIMING;
+            trailPoints = [];
+          } else {
+            // No more birds, wait for physics to settle
+            state = STATE.SETTLING;
+            settleTimer = SETTLE_FRAMES - 10; // check soon
+          }
+        }
+      }
+    }
+
+    // Also check win condition continuously (pig might die from chain reaction)
+    if (state === STATE.FLYING || state === STATE.SETTLING) {
+      const alivePigs = pigs.filter(p => !p.gameData.dead);
+      if (alivePigs.length === 0) {
+        // Count unused birds: birdsLeft is remaining queue, +1 if current bird still in flight
+        const unusedBirds = birdsLeft + (state === STATE.FLYING && currentBird ? 1 : 0);
+        score += unusedBirds * 1000;
+        starRating = unusedBirds >= Math.ceil(LEVELS[currentLevel].birds * 0.66) ? 3
+                   : unusedBirds >= Math.ceil(LEVELS[currentLevel].birds * 0.33) ? 2 : 1;
+        state = STATE.LEVEL_WIN;
+      }
+    }
+  }
+}
+
+function render() {
+  ctx.clearRect(0, 0, W, H);
+
+  if (state === STATE.MENU) {
+    menuAnim++;
+    drawMenu();
+    return;
+  }
+
+  if (state === STATE.LEVEL_SELECT) {
+    menuAnim++;
+    drawLevelSelect();
+    return;
+  }
+
+  // Game rendering
+  drawBackground();
+  drawTrail();
+  drawSlingshot();
+  drawTrajectory();
+
+  // Draw blocks
+  blocks.forEach(drawBlock);
+
+  // Draw pigs
+  pigs.forEach(drawPig);
+
+  // Draw current bird (on top of slingshot)
+  if (currentBird) {
+    drawBird(currentBird);
+  }
+
+  // Draw all previously launched birds still in world
+  flyingBodies.forEach(b => {
+    if (b !== currentBird && !b.gameData.dead) drawBird(b);
+  });
+
+  drawWaitingBirds();
+  drawParticles();
+  drawHUD();
+
+  if (state === STATE.LEVEL_WIN || state === STATE.LEVEL_LOSE) {
+    drawLevelEnd();
+  }
+}
+
+function gameLoop() {
+  update();
+  render();
+  requestAnimationFrame(gameLoop);
+}
+
+// ═══════════════════════════════════════════
+// INIT
+// ═══════════════════════════════════════════
+createBoundaries();
+gameLoop();
+
+})();
+</script>
+</body>
+</html>
