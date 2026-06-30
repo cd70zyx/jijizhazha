@@ -4,7 +4,9 @@
       "Bash(cd /tmp)",
       "Bash(npm install *)",
       "Bash(ls node_modules/puppeteer)",
-      "Bash(curl -s https://cdnjs.cloudflare.com/ajax/libs/matter-js/0.20.0/matter.min.js -o matter.min.js)"
+      "Bash(curl -s https://cdnjs.cloudflare.com/ajax/libs/matter-js/0.20.0/matter.min.js -o matter.min.js)",
+      "Bash(mkdir -p \"D:/game-lab/vendor\")",
+      "Bash(curl -fsSL \"https://cdnjs.cloudflare.com/ajax/libs/matter-js/0.20.0/matter.min.js\" -o \"D:/game-lab/vendor/matter.min.js\")"
     ]
   }
 }
